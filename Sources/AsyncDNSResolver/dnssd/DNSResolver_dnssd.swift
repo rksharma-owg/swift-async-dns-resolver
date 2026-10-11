@@ -194,10 +194,8 @@ extension DNSSD {
                 case kDNSServiceErr_NoError:
                     data = _data
                     length = _length
-                case kDNSServiceErr_Timeout:
-                    // DNSSD doesn't give up until it has answer or it times out. If it times out assume
-                    // no answer is available, in which case `data` will be `nil` and parsers will deal
-                    // with empty responses appropriately.
+                case kDNSServiceErr_Timeout, kDNSServiceErr_NoSuchRecord:
+                    // A timeout or nonexistent name has no answer. Parsers handle an empty response.
                     data = nil
                     length = 0
                 default:

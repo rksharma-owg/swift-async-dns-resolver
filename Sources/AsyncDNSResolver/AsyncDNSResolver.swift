@@ -95,6 +95,9 @@ public struct AsyncDNSResolver: Sendable {
 }
 
 /// API for running DNS queries.
+///
+/// Queries for a nonexistent name return an empty result, just like queries for
+/// an existing name that has no records of the requested type.
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 @preconcurrency public protocol DNSResolver: Sendable {
     /// Lookup A records associated with `name`.

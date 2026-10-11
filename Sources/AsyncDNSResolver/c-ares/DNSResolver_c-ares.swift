@@ -367,11 +367,11 @@ extension Ares {
                 case .cancelled:
                     continuation.resume(throwing: CancellationError())
                 case .reply(let status, let dnsrec):
-                    guard status == ARES_SUCCESS || status == ARES_ENODATA else {
+                    guard status == ARES_SUCCESS || status == ARES_ENODATA || status == ARES_ENOTFOUND else {
                         return continuation.resume(throwing: AsyncDNSResolver.Error(cAresCode: CInt(status.rawValue)))
                     }
                     do {
-                        let reply = try parser.parse(dnsrec)
+                        let reply = try parser.parse(status == ARES_ENOTFOUND ? nil : dnsrec)
                         continuation.resume(returning: reply)
                     } catch {
                         continuation.resume(throwing: error)

@@ -1,0 +1,62 @@
+name: macOS baseline control
+'on':
+  workflow_dispatch:
+    inputs:
+      patch_sha:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  control:
+    runs-on: ${{ matrix.swift == '6.1' && 'macos-15' || 'macos-26' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        swift:
+        - '6.4'
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.patch_sha }}
+        fetch-depth: 0
+        submodules: true
+        persist-credentials: false
+    - name: Verify exact contribution and baseline
+      shell: bash
+      env:
+        PATCH_SHA: ${{ inputs.patch_sha }}
+        BASE_SHA: ${{ inputs.base_sha }}
+      run: 'git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+        test "$(git rev-parse HEAD)" = "$PATCH_SHA"
+
+        git merge-base --is-ancestor "$BASE_SHA" HEAD
+
+        git log -1 --format=fuller
+
+        printf "Baseline: %s\n" "$BASE_SHA"'
+    - name: Select SDK compatible with Swift 6.1
+      if: ${{ matrix.swift == '6.1' }}
+      run: 'test -d /Applications/Xcode_16.4.app
+
+        echo "DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer" >> "$GITHUB_ENV"'
+    - uses: swift-actions/setup-swift@7e293214cba9e9225c93ce3267f17f6efdb656a8
+      with:
+        swift-version: ${{ matrix.swift }}
+    - name: Run bounded same-environment baseline and patch suites
+      shell: bash
+      env:
+        BASE_SHA: ${{ inputs.base_sha }}
+        PATCH_SHA: ${{ inputs.patch_sha }}
+      run: "swift --version\nxcodebuild -version\ncat > /tmp/bounded-suite.py <<'DRIVER'\nimport subprocess,os,signal,sys\nlog=open(sys.argv[1],\"w\")\np=subprocess.Popen([\"swift\",\"test\"],stdout=log,stderr=subprocess.STDOUT,start_new_session=True)\ntry:\n    result=p.wait(timeout=300)\nexcept subprocess.TimeoutExpired:\n    log.write(\"\\nVALIDATION TIMEOUT: swift test did not settle within 300 seconds\\n\");log.flush()\n    os.killpg(p.pid,signal.SIGTERM)\n    try:p.wait(timeout=10)\n    except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait()\n    result=124\nlog.close()\nprint(open(sys.argv[1]).read())\nsys.exit(result)\nDRIVER\nset +e\ngit checkout --detach \"$BASE_SHA\"\npython3 /tmp/bounded-suite.py /tmp/baseline-suite.log\nbaseline_status=$?\ngit checkout --detach \"$PATCH_SHA\"\npython3 /tmp/bounded-suite.py /tmp/patch-suite.log\npatch_status=$?\nset -e\nprintf 'Baseline status: %s\\nPatch status: %s\\n' \"$baseline_status\" \"$patch_status\"\ntest \"$baseline_status\"\
+        \ -eq 0\ntest \"$patch_status\" -eq 0"
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: macos-same-environment-control
+        path: /tmp/*-suite.log
+    timeout-minutes: 16

@@ -60,3 +60,5 @@ jobs:
         name: macos-same-environment-control
         path: /tmp/*-suite.log
     timeout-minutes: 16
+    env:
+      NAME_SERVERS: 1.1.1.1

@@ -1,0 +1,81 @@
+name: Apple backend regression and Swift 6.3
+'on':
+  workflow_dispatch:
+    inputs:
+      patch_sha:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: ${{ matrix.swift == '6.1' && 'macos-15' || 'macos-26' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        swift:
+        - '6.3'
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.patch_sha }}
+        fetch-depth: 0
+        submodules: true
+        persist-credentials: false
+    - name: Verify exact contribution and baseline
+      shell: bash
+      env:
+        PATCH_SHA: ${{ inputs.patch_sha }}
+        BASE_SHA: ${{ inputs.base_sha }}
+      run: 'git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+        test "$(git rev-parse HEAD)" = "$PATCH_SHA"
+
+        git merge-base --is-ancestor "$BASE_SHA" HEAD
+
+        git log -1 --format=fuller
+
+        printf "Baseline: %s\n" "$BASE_SHA"'
+    - name: Select SDK compatible with Swift 6.1
+      if: ${{ matrix.swift == '6.1' }}
+      run: 'test -d /Applications/Xcode_16.4.app
+
+        echo "DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer" >> "$GITHUB_ENV"'
+    - uses: swift-actions/setup-swift@7e293214cba9e9225c93ce3267f17f6efdb656a8
+      with:
+        swift-version: ${{ matrix.swift }}
+    - name: Prove Apple-only regression on unmodified handler
+      if: ${{ matrix.swift == '6.3' }}
+      shell: bash
+      run: 'git show "$BASE_SHA":Sources/AsyncDNSResolver/dnssd/DNSResolver_dnssd.swift > Sources/AsyncDNSResolver/dnssd/DNSResolver_dnssd.swift
+
+        set +e
+
+        swift test --filter DNSSDQueryReplyHandlerTests.test_noSuchRecordReturnsEmptyReply > /tmp/dnssd-red.log 2>&1
+
+        status=$?
+
+        set -e
+
+        cat /tmp/dnssd-red.log
+
+        test "$status" -ne 0
+
+        grep -E ''threw error|caught error'' /tmp/dnssd-red.log
+
+        grep ''NoSuchRecord\|DNSSDError(code: -65554)'' /tmp/dnssd-red.log
+
+        git restore Sources/AsyncDNSResolver/dnssd/DNSResolver_dnssd.swift'
+      env:
+        BASE_SHA: ${{ inputs.base_sha }}
+    - name: Swift build and test
+      run: 'swift --version
+
+        xcodebuild -version
+
+        swift build --build-tests
+
+        swift test'

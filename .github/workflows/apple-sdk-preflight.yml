@@ -1,0 +1,55 @@
+name: Apple SDK build matrix
+'on':
+  workflow_dispatch:
+    inputs:
+      patch_sha:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  apple-sdk:
+    runs-on: ${{ matrix.swift == '6.1' && 'macos-15' || 'macos-26' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        swift:
+        - '6.1'
+        - '6.2'
+        - '6.3'
+        - '6.4'
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.patch_sha }}
+        fetch-depth: 0
+        submodules: true
+        persist-credentials: false
+    - name: Verify exact contribution and baseline
+      shell: bash
+      env:
+        PATCH_SHA: ${{ inputs.patch_sha }}
+        BASE_SHA: ${{ inputs.base_sha }}
+      run: 'git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+        test "$(git rev-parse HEAD)" = "$PATCH_SHA"
+
+        git merge-base --is-ancestor "$BASE_SHA" HEAD
+
+        git log -1 --format=fuller
+
+        printf "Baseline: %s\n" "$BASE_SHA"'
+    - name: Select SDK compatible with Swift 6.1
+      if: ${{ matrix.swift == '6.1' }}
+      run: 'test -d /Applications/Xcode_16.4.app
+
+        echo "DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer" >> "$GITHUB_ENV"'
+    - uses: swift-actions/setup-swift@7e293214cba9e9225c93ce3267f17f6efdb656a8
+      with:
+        swift-version: ${{ matrix.swift }}
+    - name: Build all upstream Apple SDK destinations
+      shell: bash
+      run: "swift --version\nxcodebuild -version\ntoolchain_root=\"$(swiftly use --print-location)\"\ntest -f \"$toolchain_root/Info.plist\"\ntoolchain_id=\"$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \"$toolchain_root/Info.plist\")\"\necho \"Using toolchain $toolchain_id at $toolchain_root\"\nfor destination in 'generic/platform=macos,variant=macos' 'generic/platform=macos,variant=Mac Catalyst' 'generic/platform=ios' 'generic/platform=watchos' 'generic/platform=tvos' 'generic/platform=visionos'; do\n  echo \"Building $destination\"\n  xcodebuild -quiet -toolchain \"$toolchain_id\" -scheme swift-async-dns-resolver -destination \"$destination\" build\ndone"

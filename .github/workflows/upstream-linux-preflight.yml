@@ -62,7 +62,7 @@ jobs:
 
         apt-get update -qq
 
-        apt-get install -y -qq jq
+        apt-get install -y -qq jq curl
 
         curl --fail -sSL https://raw.githubusercontent.com/apple/swift-nio/e12881f2a69168c984b890eec7a10de70441d2d7/scripts/check-cxx-interop-compatibility.sh -o /tmp/check-cxx.sh
 

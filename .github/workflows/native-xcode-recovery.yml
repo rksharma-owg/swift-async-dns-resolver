@@ -61,6 +61,19 @@ jobs:
           xcrun swift --version
           xcrun clang --version
           xcodebuild -showsdks
+      - name: Configure working system DNS for native DNS-SD tests
+        if: matrix.operation == 'test'
+        run: |
+          set -euo pipefail
+          # NAME_SERVERS configures c-ares; native DNS-SD uses the system resolver.
+          # The hosted VM DNS proxy times out on apple.com TXT responses.
+          while IFS= read -r service; do
+            [ -n "$service" ] || continue
+            [[ "$service" = \** ]] && continue
+            sudo networksetup -setdnsservers "$service" 1.1.1.1
+          done < <(networksetup -listallnetworkservices | tail -n +2)
+          scutil --dns
+          dig @1.1.1.1 +time=5 +tries=1 TXT apple.com
       - name: Full test suite
         if: matrix.operation == 'test'
         env:

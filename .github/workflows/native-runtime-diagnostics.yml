@@ -67,10 +67,10 @@ jobs:
           scutil --dns
           for server in default cloudflare; do
             for transport in udp tcp; do
-              args=()
+              args=("+time=5" "+tries=1")
               if [ "$server" = cloudflare ]; then args+=("@1.1.1.1"); fi
               if [ "$transport" = tcp ]; then args+=("+tcp"); fi
-              dig "${args[@]}" +time=5 +tries=1 TXT apple.com
+              dig "${args[@]}" TXT apple.com
             done
           done
           cat > "$RUNNER_TEMP/dnssd-txt.c" <<'C_SOURCE'

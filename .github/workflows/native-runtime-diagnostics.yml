@@ -1,0 +1,111 @@
+name: Native DNS runtime diagnostics
+on:
+  workflow_dispatch:
+    inputs:
+      patch_sha:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ${{ matrix.swift == '6.4' && 'xcode-27' || 'macos-26' }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [baseline, patch]
+        swift: ['6.4']
+        operation: [test]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.source == 'baseline' && inputs.base_sha || inputs.patch_sha }}
+          fetch-depth: 0
+          submodules: true
+          persist-credentials: false
+      - name: Verify immutable source and baseline
+        env:
+          TESTED_SHA: ${{ matrix.source == 'baseline' && inputs.base_sha || inputs.patch_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          test -z "$(git status --porcelain)"
+          printf 'TESTED_SHA=%s\nBASE_SHA=%s\n' "$TESTED_SHA" "$BASE_SHA"
+      - name: Select native Xcode compiler and SDK
+        env:
+          SWIFT_VERSION: ${{ matrix.swift }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          selected=""
+          for app in /Applications/Xcode*.app; do
+            [ -d "$app/Contents/Developer" ] || continue
+            version=$(DEVELOPER_DIR="$app/Contents/Developer" xcrun swift --version)
+            printf '%s: %s\n' "$app" "$version"
+            if [[ "$version" =~ Swift\ version\ $SWIFT_VERSION([.\ ]|$) ]]; then selected="$app"; fi
+          done
+          test -n "$selected" || { echo "Required native Xcode Swift $SWIFT_VERSION unavailable" >&2; exit 1; }
+          echo "DEVELOPER_DIR=$selected/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Native compiler and SDK versions
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun swift --version
+          xcrun clang --version
+          xcodebuild -showsdks
+      - name: Full suite with bounded runtime diagnostics
+        env:
+          NAME_SERVERS: 1.1.1.1
+          VERBOSE_TESTS: 'true'
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/dns-runtime.py" <<'PYTHON'
+          import errno, os, pty, select, signal, subprocess, sys, time
+          master, slave = pty.openpty()
+          process = subprocess.Popen(["xcrun", "swift", "test", "-v"], stdout=slave, stderr=slave, start_new_session=True)
+          os.close(slave)
+          start = time.monotonic()
+          status = None
+          while True:
+              ready, _, _ = select.select([master], [], [], 0.5)
+              if ready:
+                  try:
+                      data = os.read(master, 65536)
+                      if not data: break
+                      sys.stdout.buffer.write(data); sys.stdout.buffer.flush()
+                  except OSError as error:
+                      if error.errno == errno.EIO: break
+                      raise
+              if process.poll() is not None:
+                  status = process.returncode
+                  break
+              if time.monotonic() - start > 300:
+                  print("NATIVE FULL-SUITE TIMEOUT: 300 seconds; capturing runner/runtime state", flush=True)
+                  subprocess.run(["scutil", "--dns"])
+                  subprocess.run(["dig", "apple.com"])
+                  subprocess.run(["dig", "SRV", "_caldavs._tcp.google.com"])
+                  pids = subprocess.run(["pgrep", "-x", "xctest"], capture_output=True, text=True).stdout.split()
+                  for pid in pids:
+                      subprocess.run(["sample", pid, "5", "-file", "/tmp/xctest-"+pid+".sample.txt"])
+                      with open("/tmp/xctest-"+pid+".sample.txt") as stack:
+                          print(stack.read(), flush=True)
+                  os.killpg(process.pid, signal.SIGTERM)
+                  try: process.wait(timeout=10)
+                  except subprocess.TimeoutExpired:
+                      os.killpg(process.pid, signal.SIGKILL); process.wait()
+                  status = 124
+                  break
+          os.close(master)
+          if status is None: status = process.wait()
+          print("NATIVE_SWIFT_TEST_EXIT="+str(status), flush=True)
+          sys.exit(status)
+          PYTHON
+          python3 "$RUNNER_TEMP/dns-runtime.py"

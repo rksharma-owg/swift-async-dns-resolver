@@ -1,0 +1,79 @@
+name: Native Xcode validation recovery
+on:
+  workflow_dispatch:
+    inputs:
+      patch_sha:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ${{ matrix.swift == '6.4' && 'xcode-27' || 'macos-26' }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [baseline, patch]
+        swift: ['6.4']
+        operation: [test, sdk]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.source == 'baseline' && inputs.base_sha || inputs.patch_sha }}
+          fetch-depth: 0
+          submodules: true
+          persist-credentials: false
+      - name: Verify immutable source and baseline
+        env:
+          TESTED_SHA: ${{ matrix.source == 'baseline' && inputs.base_sha || inputs.patch_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          test -z "$(git status --porcelain)"
+          printf 'TESTED_SHA=%s\nBASE_SHA=%s\n' "$TESTED_SHA" "$BASE_SHA"
+      - name: Select native Xcode compiler and SDK
+        env:
+          SWIFT_VERSION: ${{ matrix.swift }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          selected=""
+          for app in /Applications/Xcode*.app; do
+            [ -d "$app/Contents/Developer" ] || continue
+            version=$(DEVELOPER_DIR="$app/Contents/Developer" xcrun swift --version)
+            printf '%s: %s\n' "$app" "$version"
+            if [[ "$version" =~ Swift\ version\ $SWIFT_VERSION([.\ ]|$) ]]; then selected="$app"; fi
+          done
+          test -n "$selected" || { echo "Required native Xcode Swift $SWIFT_VERSION unavailable" >&2; exit 1; }
+          echo "DEVELOPER_DIR=$selected/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Native compiler and SDK versions
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun swift --version
+          xcrun clang --version
+          xcodebuild -showsdks
+      - name: Full test suite
+        if: matrix.operation == 'test'
+        env:
+          NAME_SERVERS: 1.1.1.1
+        run: |
+          set -euo pipefail
+          xcrun swift build --build-tests
+          xcrun swift test
+      - name: All upstream Apple SDK destinations
+        if: matrix.operation == 'sdk'
+        run: |
+          set -euo pipefail
+          for destination in 'generic/platform=macos,variant=macos' 'generic/platform=macos,variant=Mac Catalyst' 'generic/platform=ios' 'generic/platform=watchos' 'generic/platform=tvos' 'generic/platform=visionos'; do
+            echo "Building $destination"
+            xcodebuild -quiet -scheme swift-async-dns-resolver -destination "$destination" CODE_SIGNING_ALLOWED=NO build
+          done

@@ -70,7 +70,12 @@ jobs:
               args=("+time=5" "+tries=1")
               if [ "$server" = cloudflare ]; then args+=("@1.1.1.1"); fi
               if [ "$transport" = tcp ]; then args+=("+tcp"); fi
-              dig "${args[@]}" TXT apple.com
+              if dig "${args[@]}" TXT apple.com; then
+                echo "TXT_TRANSPORT_PASS=$server/$transport"
+              else
+                status=$?
+                echo "TXT_TRANSPORT_FAIL=$server/$transport exit=$status"
+              fi
             done
           done
           cat > "$RUNNER_TEMP/dnssd-txt.c" <<'C_SOURCE'

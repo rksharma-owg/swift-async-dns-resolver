@@ -61,6 +61,58 @@ jobs:
           xcrun swift --version
           xcrun clang --version
           xcodebuild -showsdks
+      - name: Native TXT transport and system resolver control
+        run: |
+          set -euo pipefail
+          scutil --dns
+          for server in default cloudflare; do
+            for transport in udp tcp; do
+              args=()
+              if [ "$server" = cloudflare ]; then args+=("@1.1.1.1"); fi
+              if [ "$transport" = tcp ]; then args+=("+tcp"); fi
+              dig "${args[@]}" +time=5 +tries=1 TXT apple.com
+            done
+          done
+          cat > "$RUNNER_TEMP/dnssd-txt.c" <<'C_SOURCE'
+          #include <dns_sd.h>
+          #include <stdio.h>
+          static void reply(DNSServiceRef ref, DNSServiceFlags flags, uint32_t index, DNSServiceErrorType error, const char *name, uint16_t type, uint16_t rrclass, uint16_t len, const void *data, uint32_t ttl, void *context) {
+              printf("CALLBACK error=%d flags=%u type=%u len=%u\n", error, flags, type, len); fflush(stdout);
+          }
+          int main(void) {
+              DNSServiceRef ref = NULL;
+              DNSServiceErrorType status = DNSServiceQueryRecord(&ref, kDNSServiceFlagsTimeout, 0, "apple.com", kDNSServiceType_TXT, kDNSServiceClass_IN, reply, NULL);
+              printf("QUERY_STATUS=%d\n",status); fflush(stdout);
+              if(status) return 1;
+              status = DNSServiceProcessResult(ref);
+              printf("PROCESS_STATUS=%d\n",status); fflush(stdout);
+              DNSServiceRefDeallocate(ref);
+              return status != 0;
+          }
+          C_SOURCE
+          xcrun clang -Wall -Wextra -Wno-unused-parameter "$RUNNER_TEMP/dnssd-txt.c" -o "$RUNNER_TEMP/dnssd-txt"
+          python3 - <<'PYTHON'
+          import os, subprocess
+          try:
+              p=subprocess.run([os.environ['RUNNER_TEMP']+'/dnssd-txt'], capture_output=True, text=True, timeout=35)
+              print('DEFAULT_DNSSD_EXIT',p.returncode,p.stdout,p.stderr,flush=True)
+          except subprocess.TimeoutExpired as e:
+              print('DEFAULT_DNSSD_TIMEOUT',e.stdout,e.stderr,flush=True)
+          PYTHON
+          while IFS= read -r service; do
+            [ -n "$service" ] || continue
+            [[ "$service" = \** ]] && continue
+            sudo networksetup -setdnsservers "$service" 1.1.1.1
+          done < <(networksetup -listallnetworkservices | tail -n +2)
+          scutil --dns
+          python3 - <<'PYTHON'
+          import os, subprocess
+          try:
+              p=subprocess.run([os.environ['RUNNER_TEMP']+'/dnssd-txt'], capture_output=True, text=True, timeout=35)
+              print('CLOUDFLARE_DNSSD_EXIT',p.returncode,p.stdout,p.stderr,flush=True)
+          except subprocess.TimeoutExpired as e:
+              print('CLOUDFLARE_DNSSD_TIMEOUT',e.stdout,e.stderr,flush=True)
+          PYTHON
       - name: Full suite with bounded runtime diagnostics
         env:
           NAME_SERVERS: 1.1.1.1
